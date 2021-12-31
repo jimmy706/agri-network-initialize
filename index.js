@@ -5,6 +5,7 @@ const FollowModel = require('./models/Follow');
 const PostTagModel = require('./models/PostTag');
 const FriendModel = require('./models/Friend');
 const CategoryModel = require('./models/ProductCategory');
+const ProductModel = require('./models/Product');
 
 const neo4j = require('neo4j-driver');
 const neo4jQuery = require('./neo4j-query');
@@ -145,20 +146,62 @@ async function importTags() {
     }
 }
 
-async function importProductCategories() {
+async function importProductCategories(deleteMongoData = false) {
     const categories = JSON.parse(JSON.stringify(categoriesJson));
-    await CategoryModel.deleteMany({});
+
+    if (deleteMongoData) {
+        await CategoryModel.deleteMany({});
+    }
+
 
     for (let cate of categories) {
         try {
-            const newCate = new CategoryModel(cate);
-            await newCate.save();
+            if (deleteMongoData) {
+                const newCate = new CategoryModel(cate);
+                await newCate.save()
+            }
+            const queryStr = `CREATE (c:Category{name: $name, id: $id})`;
+            const queryParam = {
+                name: cate.name,
+                id: String(newCate._id)
+            }
+            await runNeo4jQuery(queryStr, queryParam);
         }
         catch (error) {
             console.log(error);
         }
     }
+}
 
+async function importProduct(newProduct) {
+    const queryStr = `
+    MATCH (u:User{uid: "${newProduct.owner}"})        
+    CREATE (p:Product{name: $name, id: $id})
+    CREATE (u)-[:PROVIDED]->(p)`;
+    const queryParams = {
+        name: newProduct.name,
+        id: String(newProduct._id),
+    };
+
+    setTimeout(() => {
+        for(let cate of newProduct.categories) {
+            const queryStringCreateRelationship = `
+MATCH (p:Product{id: "${String(newProduct._id)}"})                
+MATCH (c:Category{id: "${cate}"})
+CREATE (p)-[:BELONGED_TO]->(c)
+            `;           
+            runNeo4jQuery(queryStringCreateRelationship);
+        }
+    }, 2000);
+    await runNeo4jQuery(queryStr, queryParams);
+}
+
+async function importProducts() {
+    const products = await ProductModel.find({});
+
+    for (let prod of products) {
+       importProduct(prod);
+    }
 }
 
 mongoose.connect(`mongodb://${MONGO_USER}:${MONGO_PASSWORD}@${MONGO_HOST}:${MONGO_PORT}/${MONGO_DB_NAME}`, {
@@ -172,7 +215,7 @@ mongoose.connect(`mongodb://${MONGO_USER}:${MONGO_PASSWORD}@${MONGO_HOST}:${MONG
         await importFriendRelationship();
         await importFollowRelationship();
         await importTags();
-        await importProductCategories();
+        await importProductCategories(false);
         mongoose.disconnect();
         driver.close();
     })
